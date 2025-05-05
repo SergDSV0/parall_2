@@ -1,0 +1,123 @@
+#include <mpi.h>
+#include <iostream>
+#include <vector>
+#include <stdexcept>
+#include <iomanip>
+
+class ParallelMatrixMultiplier {
+    static constexpr int MAX_MATRIX_SIZE = 10;
+    int rank_;
+    int size_;
+    int matrix_size_;
+    std::vector<int> matrix_a_;
+    std::vector<int> matrix_b_;
+    std::vector<int> result_matrix_;
+
+    void validate_matrix_size(int n) const {
+        if (n <= 0 || n > MAX_MATRIX_SIZE) {
+            throw std::runtime_error("Matrix size must be between 1 and " + 
+                                   std::to_string(MAX_MATRIX_SIZE));
+        }
+    }
+
+    void read_and_broadcast_matrices() {
+        if (rank_ == 0) {
+            std::cout << "Enter the size of the matrix (n x n, n <= " 
+                      << MAX_MATRIX_SIZE << "): ";
+            std::cin >> matrix_size_;
+            validate_matrix_size(matrix_size_);
+
+            matrix_a_.resize(matrix_size_ * matrix_size_);
+            matrix_b_.resize(matrix_size_ * matrix_size_);
+
+            std::cout << "Enter elements of matrix A (" << matrix_size_ 
+                      << "x" << matrix_size_ << "):\n";
+            read_matrix(matrix_a_);
+
+            std::cout << "Enter elements of matrix B (" << matrix_size_ 
+                      << "x" << matrix_size_ << "):\n";
+            read_matrix(matrix_b_);
+        }
+
+        MPI_Bcast(&matrix_size_, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        
+        if (rank_ != 0) {
+            matrix_a_.resize(matrix_size_ * matrix_size_);
+            matrix_b_.resize(matrix_size_ * matrix_size_);
+        }
+
+        MPI_Bcast(matrix_a_.data(), matrix_size_ * matrix_size_, 
+                 MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Bcast(matrix_b_.data(), matrix_size_ * matrix_size_, 
+                 MPI_INT, 0, MPI_COMM_WORLD);
+    }
+
+    void read_matrix(std::vector<int>& matrix) {
+        for (int i = 0; i < matrix_size_; ++i) {
+            for (int j = 0; j < matrix_size_; ++j) {
+                std::cin >> matrix[i * matrix_size_ + j];
+            }
+        }
+    }
+
+    void multiply_matrices() {
+        result_matrix_.assign(matrix_size_ * matrix_size_, 0);
+        
+        // Each process computes its portion of rows
+        for (int i = rank_; i < matrix_size_; i += size_) {
+            for (int j = 0; j < matrix_size_; ++j) {
+                for (int k = 0; k < matrix_size_; ++k) {
+                    result_matrix_[i * matrix_size_ + j] += 
+                        matrix_a_[i * matrix_size_ + k] * 
+                        matrix_b_[k * matrix_size_ + j];
+                }
+            }
+        }
+
+        // Combine results from all processes
+        MPI_Allreduce(MPI_IN_PLACE, result_matrix_.data(), 
+                     matrix_size_ * matrix_size_,
+                     MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    }
+
+    void print_result() const {
+        if (rank_ != 0) return;
+
+        std::cout << "\nResult matrix:\n";
+        for (int i = 0; i < matrix_size_; ++i) {
+            for (int j = 0; j < matrix_size_; ++j) {
+                std::cout << std::setw(5) << result_matrix_[i * matrix_size_ + j];
+            }
+            std::cout << "\n";
+        }
+    }
+
+public:
+    ParallelMatrixMultiplier(int argc, char* argv[]) {
+        MPI_Init(&argc, &argv);
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
+        MPI_Comm_size(MPI_COMM_WORLD, &size_);
+    }
+
+    ~ParallelMatrixMultiplier() {
+        MPI_Finalize();
+    }
+
+    void run() {
+        try {
+            read_and_broadcast_matrices();
+            multiply_matrices();
+            print_result();
+        } catch (const std::exception& e) {
+            if (rank_ == 0) {
+                std::cerr << "Error: " << e.what() << "\n";
+            }
+        }
+    }
+};
+
+int main(int argc, char* argv[]) {
+    ParallelMatrixMultiplier multiplier(argc, argv);
+    multiplier.run();
+    return 0;
+}
